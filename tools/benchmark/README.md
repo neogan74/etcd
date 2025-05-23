@@ -28,4 +28,6 @@ The following command should output the usage per the latest development.
 
 ```
   $ benchmark --help
+  $ benchmark put
+  $ benchmark put --clients 200 --conns 10 --total 100000 --key-size 100 --val-size 100  --endpoints 127.0.0.1:2379 --debug
 ```
