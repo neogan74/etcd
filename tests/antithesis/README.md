@@ -1,5 +1,7 @@
 This directory enables integration of Antithesis with etcd. There are 4 containers running in this system: 3 that make up an etcd cluster (etcd0, etcd1, etcd2) and one that "[makes the system go](https://antithesis.com/docs/getting_started/basic_test_hookup/)" (client).
 
+# Running tests with docker compose
+
 ## Quickstart
 
 ### 1. Build and Tag the Docker Image
@@ -9,6 +11,12 @@ Run this command from the `antithesis/test-template` directory:
 ```bash
 make antithesis-build-client-docker-image
 make antithesis-build-etcd-image
+```
+
+Both commands build etcd-server and etcd-client from the current branch. To build a different version of etcd you can use:
+
+```bash
+make antithesis-build-etcd-image REF=${GIT_REF} 
 ```
 
 ### 2. (Optional) Check the Image Locally
@@ -32,6 +40,8 @@ Run the following command from the root directory for Antithesis tests (`tests/a
 ```bash
 make antithesis-docker-compose-up
 ```
+
+The command uses the etcd client and server images built from step 1.
 
 The client will continuously check the health of the etcd nodes and print logs similar to:
 
@@ -98,3 +108,51 @@ make antithesis-clean
 ## Troubleshooting
 
 - **Image Pull Errors**: If Docker can’t pull `etcd-client:latest`, make sure you built it locally (see the “Build and Tag” step) or push it to a registry that Compose can access.
+
+# Running Tests with Kubernetes (WIP)
+
+## Prerequisites
+
+Please make sure that you have the following tools installed on your local:
+
+- [kubectl](https://kubernetes.io/docs/tasks/tools/#kubectl)
+- [kind](https://kind.sigs.k8s.io/docs/user/quick-start#installation)
+
+## Testing locally
+
+### Setting up the cluster and deploying the images
+
+#### 1. Ensure your access to a test kubernetes cluster
+
+You can use `kind` to create a local cluster to deploy the etcd-server and test client.  Once you have `kind` installed, you can use the following command to create a local cluster:
+
+```bash
+kind create cluster
+```
+
+Alternatively, you can use any existing kubernetes cluster you have access to.
+
+#### 2. Build and load the images
+
+Please [build the client and server images](#1-build-and-tag-the-docker-image) first. Then load the images into the `kind` cluster:
+
+If you use `kind`, the cluster will need to have access to the images using the following commands:
+
+```bash
+kind load docker-image etcd-client:latest
+kind load docker-image etcd-server:latest
+```
+
+If you use something other than `kind`, please make sure the images are accessible to your cluster. This might involve pushing the images to a container registry that your cluster can pull from.
+
+#### 3. Deploy the kubernetes manifests
+
+```bash
+kubectl apply -f ./config/manifests
+```
+
+### Tearing down the cluster
+
+```bash
+kind delete cluster --name kind
+```

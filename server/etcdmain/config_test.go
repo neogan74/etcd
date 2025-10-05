@@ -28,9 +28,11 @@ import (
 	"github.com/stretchr/testify/require"
 	"sigs.k8s.io/yaml"
 
+	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/pkg/v3/featuregate"
 	"go.etcd.io/etcd/pkg/v3/flags"
 	"go.etcd.io/etcd/server/v3/embed"
+	"go.etcd.io/etcd/server/v3/etcdserver/api/v3discovery"
 	"go.etcd.io/etcd/server/v3/features"
 )
 
@@ -207,21 +209,21 @@ func TestConfigFileClusteringFlags(t *testing.T) {
 func TestConfigParsingConflictClusteringFlags(t *testing.T) {
 	conflictArgs := [][]string{
 		{
-			"-initial-cluster=0=localhost:8000",
-			"-discovery=http://example.com/abc",
+			"--initial-cluster=0=localhost:8000",
+			"--discovery-endpoints=http://example.com/abc",
 		},
 		{
-			"-discovery-srv=example.com",
-			"-discovery=http://example.com/abc",
+			"--discovery-srv=example.com",
+			"--discovery-endpoints=http://example.com/abc",
 		},
 		{
-			"-initial-cluster=0=localhost:8000",
-			"-discovery-srv=example.com",
+			"--initial-cluster=0=localhost:8000",
+			"--discovery-srv=example.com",
 		},
 		{
-			"-initial-cluster=0=localhost:8000",
-			"-discovery=http://example.com/abc",
-			"-discovery-srv=example.com",
+			"--initial-cluster=0=localhost:8000",
+			"--discovery-endpoints=http://example.com/abc",
+			"--discovery-srv=example.com",
 		},
 	}
 
@@ -235,17 +237,21 @@ func TestConfigParsingConflictClusteringFlags(t *testing.T) {
 
 func TestConfigFileConflictClusteringFlags(t *testing.T) {
 	tests := []struct {
-		InitialCluster string `json:"initial-cluster"`
-		DNSCluster     string `json:"discovery-srv"`
-		Durl           string `json:"discovery"`
+		InitialCluster string                      `json:"initial-cluster"`
+		DNSCluster     string                      `json:"discovery-srv"`
+		DiscoveryCfg   v3discovery.DiscoveryConfig `json:"discovery-config"`
 	}{
 		{
 			InitialCluster: "0=localhost:8000",
-			Durl:           "http://example.com/abc",
+			DiscoveryCfg: v3discovery.DiscoveryConfig{
+				ConfigSpec: clientv3.ConfigSpec{Endpoints: []string{"http://example.com/abc"}},
+			},
 		},
 		{
 			DNSCluster: "example.com",
-			Durl:       "http://example.com/abc",
+			DiscoveryCfg: v3discovery.DiscoveryConfig{
+				ConfigSpec: clientv3.ConfigSpec{Endpoints: []string{"http://example.com/abc"}},
+			},
 		},
 		{
 			InitialCluster: "0=localhost:8000",
@@ -253,8 +259,10 @@ func TestConfigFileConflictClusteringFlags(t *testing.T) {
 		},
 		{
 			InitialCluster: "0=localhost:8000",
-			Durl:           "http://example.com/abc",
-			DNSCluster:     "example.com",
+			DiscoveryCfg: v3discovery.DiscoveryConfig{
+				ConfigSpec: clientv3.ConfigSpec{Endpoints: []string{"http://example.com/abc"}},
+			},
+			DNSCluster: "example.com",
 		},
 	}
 
@@ -283,29 +291,28 @@ func TestConfigParsingMissedAdvertiseClientURLsFlag(t *testing.T) {
 	}{
 		{
 			[]string{
-				"-initial-cluster=infra1=http://127.0.0.1:2380",
-				"-listen-client-urls=http://127.0.0.1:2379",
+				"--initial-cluster=infra1=http://127.0.0.1:2380",
+				"--listen-client-urls=http://127.0.0.1:2379",
 			},
 			embed.ErrUnsetAdvertiseClientURLsFlag,
 		},
 		{
 			[]string{
-				"-discovery-srv=example.com",
-				"-listen-client-urls=http://127.0.0.1:2379",
+				"--discovery-srv=example.com",
+				"--listen-client-urls=http://127.0.0.1:2379",
 			},
 			embed.ErrUnsetAdvertiseClientURLsFlag,
 		},
 		{
 			[]string{
-				"-discovery=http://example.com/abc",
-				"-discovery-fallback=exit",
-				"-listen-client-urls=http://127.0.0.1:2379",
+				"--discovery-fallback=exit",
+				"--listen-client-urls=http://127.0.0.1:2379",
 			},
 			embed.ErrUnsetAdvertiseClientURLsFlag,
 		},
 		{
 			[]string{
-				"-listen-client-urls=http://127.0.0.1:2379",
+				"--listen-client-urls=http://127.0.0.1:2379",
 			},
 			embed.ErrUnsetAdvertiseClientURLsFlag,
 		},

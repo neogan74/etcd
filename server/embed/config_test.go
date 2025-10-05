@@ -34,7 +34,9 @@ import (
 	"go.etcd.io/etcd/client/pkg/v3/srv"
 	"go.etcd.io/etcd/client/pkg/v3/transport"
 	"go.etcd.io/etcd/client/pkg/v3/types"
+	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/pkg/v3/featuregate"
+	"go.etcd.io/etcd/server/v3/etcdserver/api/v3discovery"
 	"go.etcd.io/etcd/server/v3/features"
 )
 
@@ -782,5 +784,116 @@ func TestMatchNewConfigAddFlags(t *testing.T) {
 		return a.String() == b.String()
 	})); diff != "" {
 		t.Errorf("Diff: %s", diff)
+	}
+}
+
+func TestCheckHostURLs(t *testing.T) {
+	tests := []struct {
+		name    string
+		urls    []url.URL
+		wantErr bool
+	}{
+		{
+			name: "valid HTTP URLs",
+			urls: []url.URL{
+				{Scheme: "http", Host: "127.0.0.1:2379"},
+				{Scheme: "http", Host: "localhost:2379"},
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid HTTPS URLs",
+			urls: []url.URL{
+				{Scheme: "https", Host: "127.0.0.1:2379"},
+				{Scheme: "https", Host: "localhost:2379"},
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid Unix socket URLs",
+			urls: []url.URL{
+				{Scheme: "unix", Host: "", Path: "/tmp/etcd.sock"},
+				{Scheme: "unixs", Host: "", Path: "/tmp/etcd-secure.sock"},
+			},
+			wantErr: false,
+		},
+		{
+			name: "empty host in URL",
+			urls: []url.URL{
+				{Scheme: "http", Host: ""},
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid host format",
+			urls: []url.URL{
+				{Scheme: "http", Host: "invalid_host"},
+			},
+			wantErr: true,
+		},
+		{
+			name: "missing port in host",
+			urls: []url.URL{
+				{Scheme: "http", Host: "127.0.0.1"},
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := checkHostURLs(tt.urls)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("checkHostURLs() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestDiscoveryCfg(t *testing.T) {
+	testCases := []struct {
+		name         string
+		discoveryCfg v3discovery.DiscoveryConfig
+		wantErr      bool
+	}{
+		{
+			name: "Valid discovery config",
+			discoveryCfg: v3discovery.DiscoveryConfig{
+				ConfigSpec: clientv3.ConfigSpec{
+					Endpoints: []string{"http://10.0.0.100:2379", "http://10.0.0.101:2379"},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "Partial empty discovery endpoints",
+			discoveryCfg: v3discovery.DiscoveryConfig{
+				ConfigSpec: clientv3.ConfigSpec{
+					Endpoints: []string{"http://10.0.0.100:2379", ""},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "Empty discovery endpoint",
+			discoveryCfg: v3discovery.DiscoveryConfig{
+				ConfigSpec: clientv3.ConfigSpec{
+					Endpoints: []string{"", ""},
+				},
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := NewConfig()
+			cfg.InitialCluster = ""
+			cfg.DiscoveryCfg = tc.discoveryCfg
+			cfg.DiscoveryCfg.Token = "foo"
+			err := cfg.Validate()
+
+			require.Equal(t, tc.wantErr, err != nil)
+		})
 	}
 }

@@ -8,6 +8,20 @@ include $(REPOSITORY_ROOT)/tests/robustness/Makefile
 build:
 	GO_BUILD_FLAGS="${GO_BUILD_FLAGS} -v -mod=readonly" ./scripts/build.sh
 
+.PHONY: install-benchmark
+install-benchmark: build
+ifeq (, $(shell command -v benchmark))
+	@echo "Installing etcd benchmark tool..."
+	go install -v ./tools/benchmark
+else
+	@echo "benchmark tool already installed..."
+endif
+
+.PHONY: bench-put
+bench-put: build install-benchmark
+	@echo "Running benchmark: put $(ARGS)"
+	./scripts/benchmark_test.sh put $(ARGS)
+
 PLATFORMS=linux-amd64 linux-386 linux-arm linux-arm64 linux-ppc64le linux-s390x darwin-amd64 darwin-arm64 windows-amd64 windows-arm64
 
 .PHONY: build-all
@@ -85,10 +99,11 @@ fuzz:
 verify: verify-gofmt verify-bom verify-lint verify-dep verify-shellcheck verify-goword \
 	verify-govet verify-license-header verify-mod-tidy \
 	verify-shellws verify-proto-annotations verify-genproto verify-yamllint \
-	verify-govet-shadow verify-markdown-marker verify-go-versions
+	verify-govet-shadow verify-markdown-marker verify-go-versions verify-gomodguard \
+	verify-go-workspace
 
 .PHONY: fix
-fix: fix-bom fix-lint fix-yamllint sync-toolchain-directive
+fix: fix-bom fix-lint fix-yamllint sync-toolchain-directive update-go-workspace
 	./scripts/fix.sh
 
 .PHONY: verify-gofmt
@@ -149,7 +164,7 @@ verify-genproto:
 
 .PHONY: verify-yamllint
 verify-yamllint:
-ifeq (, $(shell which yamllint))
+ifeq (, $(shell command -v yamllint))
 	@echo "Installing yamllint..."
 	tmpdir=$$(mktemp -d); \
 	trap "rm -rf $$tmpdir" EXIT; \
@@ -173,26 +188,20 @@ YAMLFMT_VERSION = $(shell cd tools/mod && go list -m -f '{{.Version}}' github.co
 
 .PHONY: fix-yamllint
 fix-yamllint:
-ifeq (, $(shell which yamlfmt))
+ifeq (, $(shell command -v yamlfmt))
 	$(shell go install github.com/google/yamlfmt/cmd/yamlfmt@$(YAMLFMT_VERSION))
 endif
 	yamlfmt -conf tools/.yamlfmt .
 
 .PHONY: run-govulncheck
 run-govulncheck:
-ifeq (, $(shell which govulncheck))
-	$(shell go install golang.org/x/vuln/cmd/govulncheck@latest)
-endif
 	PASSES="govuln" ./scripts/test.sh
 
 # Tools
 
-GOLANGCI_LINT_VERSION = $(shell cd tools/mod && go list -m -f {{.Version}} github.com/golangci/golangci-lint)
 .PHONY: install-golangci-lint
 install-golangci-lint:
-ifeq (, $(shell which golangci-lint))
-	$(shell curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(GOPATH)/bin $(GOLANGCI_LINT_VERSION))
-endif
+	./scripts/verify_golangci-lint_version.sh
 
 .PHONY: install-lazyfs
 install-lazyfs: bin/lazyfs
@@ -225,6 +234,14 @@ clean:
 verify-go-versions:
 	./scripts/verify_go_versions.sh
 
+.PHONY: verify-gomodguard
+verify-gomodguard:
+	PASSES="gomodguard" ./scripts/test.sh
+
+.PHONY: verify-go-workspace
+verify-go-workspace:
+	PASSES="go_workspace" ./scripts/test.sh
+
 .PHONY: sync-toolchain-directive
 sync-toolchain-directive:
 	./scripts/sync_go_toolchain_directive.sh
@@ -232,3 +249,7 @@ sync-toolchain-directive:
 .PHONY: markdown-diff-lint
 markdown-diff-lint:
 	./scripts/markdown_diff_lint.sh
+
+.PHONY: update-go-workspace
+update-go-workspace:
+	./scripts/update_go_workspace.sh

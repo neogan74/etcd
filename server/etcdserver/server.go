@@ -22,8 +22,6 @@ import (
 	"fmt"
 	"math"
 	"net/http"
-	"path"
-	"regexp"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -119,7 +117,6 @@ var (
 	monitorVersionInterval = rafthttp.ConnWriteTimeout - time.Second
 
 	recommendedMaxRequestBytesString = humanize.Bytes(uint64(recommendedMaxRequestBytes))
-	storeMemberAttributeRegexp       = regexp.MustCompile(path.Join(membership.StoreMembersPrefix, "[[:xdigit:]]{1,16}", "attributes"))
 )
 
 func init() {
@@ -208,11 +205,11 @@ type Server interface {
 // EtcdServer is the production implementation of the Server interface
 type EtcdServer struct {
 	// inflightSnapshots holds count the number of snapshots currently inflight.
-	inflightSnapshots int64  // must use atomic operations to access; keep 64-bit aligned.
-	appliedIndex      uint64 // must use atomic operations to access; keep 64-bit aligned.
-	committedIndex    uint64 // must use atomic operations to access; keep 64-bit aligned.
-	term              uint64 // must use atomic operations to access; keep 64-bit aligned.
-	lead              uint64 // must use atomic operations to access; keep 64-bit aligned.
+	inflightSnapshots atomic.Int64
+	appliedIndex      atomic.Uint64
+	committedIndex    atomic.Uint64
+	term              atomic.Uint64
+	lead              atomic.Uint64
 
 	consistIndex cindex.ConsistentIndexer // consistIndex is used to get/set/save consistentIndex
 	r            raftNode                 // uses 64-bit atomics; keep 64-bit aligned.
@@ -266,7 +263,6 @@ type EtcdServer struct {
 	stats  *stats.ServerStats
 	lstats *stats.LeaderStats
 
-	SyncTicker *time.Ticker
 	// compactor is used to auto-compact the KV.
 	compactor v3compactor.Compactor
 
@@ -333,7 +329,6 @@ func NewServer(cfg config.ServerConfig) (srv *EtcdServer, err error) {
 		cluster:               b.cluster.cl,
 		stats:                 sstats,
 		lstats:                lstats,
-		SyncTicker:            time.NewTicker(500 * time.Millisecond),
 		peerRt:                b.prt,
 		reqIDGen:              idutil.NewGenerator(uint16(b.cluster.nodeID), time.Now()),
 		AccessController:      &AccessController{CORS: cfg.CORS, HostWhitelist: cfg.HostWhitelist},
@@ -831,8 +826,6 @@ func (s *EtcdServer) run() {
 		// wait for goroutines before closing raft so wal stays open
 		s.wg.Wait()
 
-		s.SyncTicker.Stop()
-
 		// must stop raft after scheduler-- etcdserver can leak rafthttp pipelines
 		// by adding a peer after raft stops the transport
 		s.r.stop()
@@ -972,6 +965,12 @@ func (s *EtcdServer) Cleanup() {
 	}
 }
 
+func (s *EtcdServer) Defragment() error {
+	s.bemu.Lock()
+	defer s.bemu.Unlock()
+	return s.be.Defrag()
+}
+
 func (s *EtcdServer) applyAll(ep *etcdProgress, apply *toApply) {
 	s.applySnapshot(ep, apply)
 	s.applyEntries(ep, apply)
@@ -1033,11 +1032,21 @@ func (s *EtcdServer) applySnapshot(ep *etcdProgress, toApply *toApply) {
 	// wait for raftNode to persist snapshot onto the disk
 	<-toApply.notifyc
 
+	bemuUnlocked := false
+	s.bemu.Lock()
+	defer func() {
+		if !bemuUnlocked {
+			s.bemu.Unlock()
+		}
+	}()
+
 	// gofail: var applyBeforeOpenSnapshot struct{}
 	newbe, err := serverstorage.OpenSnapshotBackend(s.Cfg, s.snapshotter, toApply.snapshot, s.beHooks)
 	if err != nil {
 		lg.Panic("failed to open snapshot backend", zap.Error(err))
 	}
+	lg.Info("applySnapshot: opened snapshot backend")
+	// gofail: var applyAfterOpenSnapshot struct{}
 
 	// We need to set the backend to consistIndex before recovering the lessor,
 	// because lessor.Recover will commit the boltDB transaction, accordingly it
@@ -1067,11 +1076,14 @@ func (s *EtcdServer) applySnapshot(ep *etcdProgress, toApply *toApply) {
 
 	lg.Info("restored mvcc store", zap.Uint64("consistent-index", s.consistIndex.ConsistentIndex()))
 
+	oldbe := s.be
+	s.be = newbe
+	s.bemu.Unlock()
+	bemuUnlocked = true
+
 	// Closing old backend might block until all the txns
 	// on the backend are finished.
 	// We do not want to wait on closing the old backend.
-	s.bemu.Lock()
-	oldbe := s.be
 	go func() {
 		lg.Info("closing old backend file")
 		defer func() {
@@ -1081,9 +1093,6 @@ func (s *EtcdServer) applySnapshot(ep *etcdProgress, toApply *toApply) {
 			lg.Panic("failed to close old backend", zap.Error(err))
 		}
 	}()
-
-	s.be = newbe
-	s.bemu.Unlock()
 
 	lg.Info("restoring alarm store")
 
@@ -1167,18 +1176,22 @@ func (s *EtcdServer) NewUberApplier() apply.UberApplier {
 }
 
 func verifySnapshotIndex(snapshot raftpb.Snapshot, cindex uint64) {
-	verify.Verify(func() {
-		if cindex != snapshot.Metadata.Index {
-			panic(fmt.Sprintf("consistent_index(%d) isn't equal to snapshot index (%d)", cindex, snapshot.Metadata.Index))
-		}
+	verify.Verify("consistent_index isn't equal to snapshot index", func() (bool, map[string]any) {
+		return cindex == snapshot.Metadata.Index,
+			map[string]any{
+				"consistent_index": cindex,
+				"snapshot_index":   snapshot.Metadata.Index,
+			}
 	})
 }
 
-func verifyConsistentIndexIsLatest(lg *zap.Logger, snapshot raftpb.Snapshot, cindex uint64) {
-	verify.Verify(func() {
-		if cindex < snapshot.Metadata.Index {
-			lg.Panic(fmt.Sprintf("consistent_index(%d) is older than snapshot index (%d)", cindex, snapshot.Metadata.Index))
-		}
+func verifyConsistentIndexIsLatest(snapshot raftpb.Snapshot, cindex uint64) {
+	verify.Verify("consistent_index is older than snapshot_index", func() (bool, map[string]any) {
+		return cindex >= snapshot.Metadata.Index,
+			map[string]any{
+				"consistent_index": cindex,
+				"snapshot_index":   snapshot.Metadata.Index,
+			}
 	})
 }
 
@@ -1667,35 +1680,35 @@ func (s *EtcdServer) UpdateMember(ctx context.Context, memb membership.Member) (
 }
 
 func (s *EtcdServer) setCommittedIndex(v uint64) {
-	atomic.StoreUint64(&s.committedIndex, v)
+	s.committedIndex.Store(v)
 }
 
 func (s *EtcdServer) getCommittedIndex() uint64 {
-	return atomic.LoadUint64(&s.committedIndex)
+	return s.committedIndex.Load()
 }
 
 func (s *EtcdServer) setAppliedIndex(v uint64) {
-	atomic.StoreUint64(&s.appliedIndex, v)
+	s.appliedIndex.Store(v)
 }
 
 func (s *EtcdServer) getAppliedIndex() uint64 {
-	return atomic.LoadUint64(&s.appliedIndex)
+	return s.appliedIndex.Load()
 }
 
 func (s *EtcdServer) setTerm(v uint64) {
-	atomic.StoreUint64(&s.term, v)
+	s.term.Store(v)
 }
 
 func (s *EtcdServer) getTerm() uint64 {
-	return atomic.LoadUint64(&s.term)
+	return s.term.Load()
 }
 
 func (s *EtcdServer) setLead(v uint64) {
-	atomic.StoreUint64(&s.lead, v)
+	s.lead.Store(v)
 }
 
 func (s *EtcdServer) getLead() uint64 {
-	return atomic.LoadUint64(&s.lead)
+	return s.lead.Load()
 }
 
 func (s *EtcdServer) LeaderChangedNotify() <-chan struct{} {
@@ -1835,7 +1848,7 @@ func (s *EtcdServer) publishV3(timeout time.Duration) {
 }
 
 func (s *EtcdServer) sendMergedSnap(merged snap.Message) {
-	atomic.AddInt64(&s.inflightSnapshots, 1)
+	s.inflightSnapshots.Add(1)
 
 	lg := s.Logger()
 	fields := []zap.Field{
@@ -1863,7 +1876,7 @@ func (s *EtcdServer) sendMergedSnap(merged snap.Message) {
 				}
 			}
 
-			atomic.AddInt64(&s.inflightSnapshots, -1)
+			s.inflightSnapshots.Add(-1)
 
 			lg.Info("sent merged snapshot", append(fields, zap.Duration("took", time.Since(now)))...)
 
@@ -1931,7 +1944,6 @@ func (s *EtcdServer) apply(
 
 // applyEntryNormal applies an EntryNormal type raftpb request to the EtcdServer
 func (s *EtcdServer) applyEntryNormal(e *raftpb.Entry, shouldApplyV3 membership.ShouldApplyV3) {
-	var ar *apply.Result
 	if shouldApplyV3 {
 		defer func() {
 			// The txPostLockInsideApplyHook will not get called in some cases,
@@ -1956,36 +1968,7 @@ func (s *EtcdServer) applyEntryNormal(e *raftpb.Entry, shouldApplyV3 membership.
 		return
 	}
 
-	var raftReq pb.InternalRaftRequest
-	if !pbutil.MaybeUnmarshal(&raftReq, e.Data) { // backward compatible
-		var r pb.Request
-		rp := &r
-		pbutil.MustUnmarshal(rp, e.Data)
-		s.lg.Debug("applyEntryNormal", zap.Stringer("V2request", rp))
-		raftReq = v2ToV3Request(s.lg, (*RequestV2)(rp))
-	}
-	s.lg.Debug("applyEntryNormal", zap.Stringer("raftReq", &raftReq))
-
-	if raftReq.V2 != nil {
-		req := (*RequestV2)(raftReq.V2)
-		raftReq = v2ToV3Request(s.lg, req)
-	}
-
-	id := raftReq.ID
-	if id == 0 {
-		if raftReq.Header == nil {
-			s.lg.Panic("applyEntryNormal, could not find a header")
-		}
-		id = raftReq.Header.ID
-	}
-
-	needResult := s.w.IsRegistered(id)
-	if needResult || !noSideEffect(&raftReq) {
-		if !needResult && raftReq.Txn != nil {
-			removeNeedlessRangeReqs(raftReq.Txn)
-		}
-		ar = s.uberApply.Apply(&raftReq, shouldApplyV3)
-	}
+	ar, id := apply.Apply(s.lg, e, s.uberApply, s.w, shouldApplyV3)
 
 	// do not re-toApply applied entries.
 	if !shouldApplyV3 {
@@ -2018,28 +2001,6 @@ func (s *EtcdServer) applyEntryNormal(e *raftpb.Entry, shouldApplyV3 membership.
 		s.raftRequest(s.ctx, pb.InternalRaftRequest{Alarm: a})
 		s.w.Trigger(id, ar)
 	})
-}
-
-func noSideEffect(r *pb.InternalRaftRequest) bool {
-	return r.Range != nil || r.AuthUserGet != nil || r.AuthRoleGet != nil || r.AuthStatus != nil
-}
-
-func removeNeedlessRangeReqs(txn *pb.TxnRequest) {
-	f := func(ops []*pb.RequestOp) []*pb.RequestOp {
-		j := 0
-		for i := 0; i < len(ops); i++ {
-			if _, ok := ops[i].Request.(*pb.RequestOp_RequestRange); ok {
-				continue
-			}
-			ops[j] = ops[i]
-			j++
-		}
-
-		return ops[:j]
-	}
-
-	txn.Success = f(txn.Success)
-	txn.Failure = f(txn.Failure)
 }
 
 // applyConfChange applies a ConfChange to the server. It is only
@@ -2151,7 +2112,7 @@ func (s *EtcdServer) snapshot(ep *etcdProgress, toDisk bool) {
 	}
 	ep.memorySnapshotIndex = ep.appliedi
 
-	verifyConsistentIndexIsLatest(lg, snap, s.consistIndex.ConsistentIndex())
+	verifyConsistentIndexIsLatest(snap, s.consistIndex.ConsistentIndex())
 
 	if toDisk {
 		// SaveSnap saves the snapshot to file and appends the corresponding WAL entry.
@@ -2178,7 +2139,7 @@ func (s *EtcdServer) compactRaftLog(snapi uint64) {
 	// the snapshot sent to catch up. If we do not pause compaction, the log entries right after
 	// the snapshot sent might already be compacted. It happens when the snapshot takes long time
 	// to send and save. Pausing compaction avoids triggering a snapshot sending cycle.
-	if atomic.LoadInt64(&s.inflightSnapshots) != 0 {
+	if s.inflightSnapshots.Load() != 0 {
 		lg.Info("skip compaction since there is an inflight snapshot")
 		return
 	}

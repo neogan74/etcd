@@ -1,4 +1,17 @@
 #!/usr/bin/env bash
+# Copyright 2025 The etcd Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 set -euo pipefail
 
@@ -78,7 +91,7 @@ function run_for_module {
 }
 
 function module_dirs() {
-  echo "api pkg client/pkg client/internal/v2 client/v3 server etcdutl etcdctl tests tools/mod tools/rw-heatmaps tools/testgrid-analysis ."
+  echo "api pkg client/pkg client/v3 server etcdutl etcdctl tests tools/mod tools/rw-heatmaps tools/testgrid-analysis cache ."
 }
 
 # maybe_run [cmd...] runs given command depending on the DRY_RUN flag.
@@ -98,7 +111,6 @@ function modules() {
     "${ROOT_MODULE}/api/v3"
     "${ROOT_MODULE}/pkg/v3"
     "${ROOT_MODULE}/client/pkg/v3"
-    "${ROOT_MODULE}/client/v2"
     "${ROOT_MODULE}/client/v3"
     "${ROOT_MODULE}/server/v3"
     "${ROOT_MODULE}/etcdutl/v3"
@@ -288,7 +300,8 @@ function tool_exists {
   fi
 }
 
-# tool_get_bin [tool] - returns absolute path to a tool binary (or returns error)
+# tool_get_bin [tool] - returns absolute path to a tool binary (or returns error).
+# This function is only used to run commands that are managed by tools/mod.
 function tool_get_bin {
   local tool="$1"
   local pkg_part="$1"

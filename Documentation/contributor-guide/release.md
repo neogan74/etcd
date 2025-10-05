@@ -17,7 +17,6 @@ for ensuring the stability of the release branch.
 - Marek Siarkowicz [@serathius](https://github.com/serathius)
 - Sahdev Zala [@spzala](https://github.com/spzala)
 - Siyuan Zhang [@siyuanfoundation](https://github.com/siyuanfoundation)
-- Wenjia Zhang [@wenjiaswe](https://github.com/wenjiaswe)
 
 All release version numbers follow the format of [semantic versioning 2.0.0](http://semver.org/).
 
@@ -99,12 +98,18 @@ On the day of the release:
 
    It generates all release binaries under the directory `/tmp/etcd-release-${VERSION}/etcd/release/` and images. Binaries are pushed to the Google Cloud bucket
    under project `etcd-development`, and images are pushed to `quay.io` and `gcr.io`.
+   - It is advisable to do a dry run before the actual release. This will create a `/tmp` directory. Do **NOT** forget to remove this directory before the actual release.
+
+      ```bash
+      DRY_RUN=true BRANCH=${BRANCH} ./scripts/release.sh ${VERSION}
+      ```
+
 4. Publish the release page on GitHub
    - Open the **draft** release URL shown by the release script
    - Click the pen button at the top right to edit the release
    - Review that it looks correct, reviewing that the bottom checkboxes are checked depending on the
-     release version (v3.4 no checkboxes, v3.5 has the set as latest release checkbox checked,
-     v3.6 has the set as pre-release checkbox checked)
+     release version (v3.4 & v3.5 no checkboxes, v3.6 has the set as latest release checkbox checked,
+     v3.7 has the set as pre-release checkbox checked)
    - Then, publish the release
 5. Announce to the etcd-dev googlegroup
 

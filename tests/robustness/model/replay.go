@@ -22,7 +22,7 @@ import (
 
 func NewReplay(persistedRequests []EtcdRequest) *EtcdReplay {
 	state := freshEtcdState()
-	// Padding for index 0 and 1, so index matches revision..
+	// Padding for index 0 and 1, so the index matches the revision.
 	revisionToEtcdState := []EtcdState{state, state}
 	var events []PersistedEvent
 	for _, request := range persistedRequests {
@@ -74,7 +74,7 @@ func toWatchEvents(prevState *EtcdState, request EtcdRequest, response MaybeEtcd
 		} else {
 			ops = request.Txn.OperationsOnSuccess
 		}
-		for _, op := range ops {
+		for i, op := range ops {
 			switch op.Type {
 			case RangeOperation:
 			case DeleteOperation:
@@ -85,7 +85,7 @@ func toWatchEvents(prevState *EtcdState, request EtcdRequest, response MaybeEtcd
 					},
 					Revision: response.Revision,
 				}
-				if _, ok := prevState.KeyValues[op.Delete.Key]; ok {
+				if response.Txn.Results[i].Deleted != 0 {
 					events = append(events, e)
 				}
 			case PutOperation:

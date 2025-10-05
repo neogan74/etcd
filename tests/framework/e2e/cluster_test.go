@@ -43,8 +43,7 @@ func TestEtcdServerProcessConfig(t *testing.T) {
 				"--listen-peer-urls=http://localhost:1",
 				"--initial-advertise-peer-urls=http://localhost:1",
 				"--initial-cluster-token=new",
-				"--data-dir",
-				"/tmp/a/member-0",
+				"--data-dir=/tmp/a/member-0",
 				"--snapshot-count=10000",
 				"--initial-cluster-token=new",
 			},
@@ -119,13 +118,6 @@ func TestEtcdServerProcessConfig(t *testing.T) {
 			config: NewConfig(WithMetricsURLScheme("http")),
 			expectArgsContain: []string{
 				"--listen-metrics-urls=http://localhost:2",
-			},
-		},
-		{
-			name:   "Discovery",
-			config: NewConfig(WithDiscovery("123")),
-			expectArgsContain: []string{
-				"--discovery=123",
 			},
 		},
 		{

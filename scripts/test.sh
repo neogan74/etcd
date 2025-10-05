@@ -1,4 +1,17 @@
 #!/usr/bin/env bash
+# Copyright 2025 The etcd Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 #
 # Run all etcd tests
 # ./scripts/test.sh
@@ -385,6 +398,7 @@ function markdown_marker_pass {
 }
 
 function govuln_pass {
+  run go install golang.org/x/vuln/cmd/govulncheck@latest
   run_for_modules run govulncheck -show verbose
 }
 
@@ -434,11 +448,11 @@ function govet_shadow_pass {
 }
 
 function lint_pass {
-  run_for_modules generic_checker run golangci-lint run --config "${ETCD_ROOT_DIR}/tools/.golangci.yaml"
+  run_for_modules generic_checker run golangci-lint run --config "${ETCD_ROOT_DIR}/tools/.golangci.yaml" --show-stats=false
 }
 
 function lint_fix_pass {
-  run_for_modules generic_checker run golangci-lint run --config "${ETCD_ROOT_DIR}/tools/.golangci.yaml" --fix
+  run_for_modules generic_checker run golangci-lint run --config "${ETCD_ROOT_DIR}/tools/.golangci.yaml" --fix --show-stats=false
 }
 
 function license_header_per_module {
@@ -502,10 +516,15 @@ function bom_pass {
   run cp go.sum go.sum.tmp || return 2
   run cp go.mod go.mod.tmp || return 2
 
+  # Intentionally run the command once first, so it fetches dependencies. The exit code on the first
+  # run in a just cloned repository is always dirty.
+  GOOS=linux run_go_tool github.com/appscodelabs/license-bill-of-materials \
+    --override-file ./bill-of-materials.override.json "${modules[@]}"
+
   # BOM file should be generated for linux. Otherwise running this command on other operating systems such as OSX
-  # results in certain dependencies being excluded from the BOM file, such as procfs. 
+  # results in certain dependencies being excluded from the BOM file, such as procfs.
   # For more info, https://github.com/etcd-io/etcd/issues/19665
-  output=$(GOOS=linux GOFLAGS=-mod=mod run_go_tool github.com/appscodelabs/license-bill-of-materials \
+  output=$(GOOS=linux run_go_tool github.com/appscodelabs/license-bill-of-materials \
     --override-file ./bill-of-materials.override.json \
     "${modules[@]}")
   code="$?"
@@ -526,6 +545,18 @@ function bom_pass {
   rm bom-now.json.tmp
 }
 
+function gomodguard_for_module {
+  if [ ! -f .gomodguard.yaml ]; then
+    # Nothing to validate, return.
+    return
+  fi
+  run_go_tool github.com/ryancurrah/gomodguard/cmd/gomodguard
+}
+
+function gomodguard_pass {
+  run_for_modules gomodguard_for_module
+}
+
 ######## VARIOUS CHECKERS ######################################################
 
 function dump_deps_of_module() {
@@ -533,7 +564,12 @@ function dump_deps_of_module() {
   if ! module=$(run go mod edit -json | jq -r .Module.Path); then
     return 255
   fi
-  run go mod edit -json | jq -r '.Require[] | .Path+","+.Version+","+if .Indirect then " (indirect)" else "" end+",'"${module}"'"'
+  local require
+  require=$(run go mod edit -json | jq -r '.Require')
+  if [ "$require" == "null" ]; then
+    return 0
+  fi
+  echo "$require" | jq -r '.[] | .Path+","+.Version+","+if .Indirect then " (indirect)" else "" end+",'"${module}"'"'
 }
 
 # Checks whether dependencies are consistent across modules
@@ -587,7 +623,7 @@ function release_pass {
   UPGRADE_VER=$(git ls-remote --tags https://github.com/etcd-io/etcd.git \
     | grep --only-matching --perl-regexp "(?<=v)${binary_major}.${previous_minor}.[\d]+?(?=[\^])" \
     | sort --numeric-sort --key 1.5 | tail -1 | sed 's/^/v/')
-  log_callout "Found latest release: ${UPGRADE_VER}."
+  log_callout "Found previous minor version (v${binary_major}.${previous_minor}) latest release: ${UPGRADE_VER}."
 
   if [ -n "${MANUAL_VER:-}" ]; then
     # in case, we need to test against different version
@@ -665,6 +701,17 @@ function proto_annotations_pass {
 
 function genproto_pass {
   "${ETCD_ROOT_DIR}/scripts/verify_genproto.sh"
+}
+
+function go_workspace_pass {
+  log_callout "Ensuring go workspace is in sync."
+
+  run go mod download
+  if [ -n "$(git status --porcelain go.work.sum)" ]; then
+    log_error "Go workspace not in sync."
+    log_warning "Suggestion: run \"make fix\" to address the issue."
+    return 255
+  fi
 }
 
 ########### MAIN ###############################################################

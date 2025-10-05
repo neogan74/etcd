@@ -4,6 +4,81 @@ Previous change logs can be found at [CHANGELOG-3.5](https://github.com/etcd-io/
 
 ---
 
+## v3.6.6 (TBA)
+
+### etcd server
+
+- [Reject watch request with -1 revision to prevent invalid resync behavior on uncompacted etcd](https://github.com/etcd-io/etcd/pull/20707)
+- [Change the TLS handshake 'EOF' errors to DEBUG not to spam logs](https://github.com/etcd-io/etcd/pull/20749)
+
+---
+
+## v3.6.5 (2025-09-19)
+
+### etcd server
+
+- [Remove the flag `--experimental-snapshot-catch-up-entries` from `etcd --help` output](https://github.com/etcd-io/etcd/pull/20422)
+- Fix [etcd repeatedly log the error "cannot detect storage schema version: missing confstate information"](https://github.com/etcd-io/etcd/pull/20496)
+- Fix [etcd may return success for leaseRenew request even when the lease is revoked](https://github.com/etcd-io/etcd/pull/20615)
+- Fix [potential data corruption when applySnapshot and defragment happen concurrently](https://github.com/etcd-io/etcd/pull/20650)
+
+### Dependencies
+
+- Compile binaries using [go 1.24.7](https://github.com/etcd-io/etcd/pull/20664).
+- [Bump bbolt to v1.4.3](https://github.com/etcd-io/etcd/pull/20513).
+
+---
+
+## v3.6.4 (2025-07-25)
+
+### etcd server
+
+- Fix [etcdserver bootstrap failure when replaying learner promotion operation due to not exist in v3store](https://github.com/etcd-io/etcd/pull/20387)
+
+---
+
+## v3.6.3 (2025-07-22)
+
+### etcd server
+
+- Fix [v2store check (IsMetaStoreOnly) returns wrong result even there is no any auth data](https://github.com/etcd-io/etcd/pull/20370)
+- Improve [help message for --quota-backend-bytes](https://github.com/etcd-io/etcd/pull/20352)
+
+---
+
+## v3.6.2 (2025-07-09)
+
+### etcd server
+
+- Fix [Watch on future revision returns old events or notifications](https://github.com/etcd-io/etcd/pull/20286)
+
+### Dependencies
+
+- [Bump bbolt to v1.4.2](https://github.com/etcd-io/etcd/pull/20267)
+- Compile binaries using [go 1.23.11](https://github.com/etcd-io/etcd/pull/20314).
+
+---
+
+## v3.6.1 (2025-06-06)
+
+### etcd server
+
+- [Replaced the deprecated/removed `UnaryServerInterceptor` and `StreamServerInterceptor` in otelgrpc with `NewServerHandler`](https://github.com/etcd-io/etcd/pull/20043)
+- [Add protection on `PromoteMember` and `UpdateRaftAttributes` to prevent panicking](https://github.com/etcd-io/etcd/pull/20051)
+- [Fix the issue that `--force-new-cluster` can't remove all other members in a corner case](https://github.com/etcd-io/etcd/pull/20071)
+- Fix [mvcc: avoid double decrement of watcher gauge on close/cancel race](https://github.com/etcd-io/etcd/pull/20067)
+- [Add validation to ensure there is no empty v3discovery endpoint](https://github.com/etcd-io/etcd/pull/20113)
+
+### etcdctl
+
+- Fix [command `etcdctl endpoint health` doesn't work when options are set via environment variables](https://github.com/etcd-io/etcd/pull/20121)
+
+### Dependencies
+
+- Compile binaries using [go 1.23.10](https://github.com/etcd-io/etcd/pull/20128).
+
+---
+
 ## v3.6.0 (2025-05-15)
 
 There isn't any production code change since v3.6.0-rc.5.

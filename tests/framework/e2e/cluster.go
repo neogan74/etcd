@@ -177,10 +177,6 @@ type EtcdProcessClusterConfig struct {
 	IsPeerTLS          bool
 	IsPeerAutoTLS      bool
 	CN                 bool
-
-	// Discovery is for v2discovery
-	// Note: remove this field when we remove the v2discovery
-	Discovery string // v2 discovery
 }
 
 func DefaultConfig() *EtcdProcessClusterConfig {
@@ -294,10 +290,6 @@ func WithRollingStart(rolling bool) EPClusterOption {
 	return func(c *EtcdProcessClusterConfig) { c.RollingStart = rolling }
 }
 
-func WithDiscovery(discovery string) EPClusterOption {
-	return func(c *EtcdProcessClusterConfig) { c.Discovery = discovery }
-}
-
 func WithDiscoveryEndpoints(endpoints []string) EPClusterOption {
 	return func(c *EtcdProcessClusterConfig) { c.ServerConfig.DiscoveryCfg.Endpoints = endpoints }
 }
@@ -396,6 +388,15 @@ func WithCipherSuites(suites []string) EPClusterOption {
 
 func WithExtensiveMetrics() EPClusterOption {
 	return func(c *EtcdProcessClusterConfig) { c.ServerConfig.Metrics = "extensive" }
+}
+
+func WithEnableDistributedTracing(addr string) EPClusterOption {
+	return func(c *EtcdProcessClusterConfig) {
+		c.ServerConfig.EnableDistributedTracing = true
+		c.ServerConfig.DistributedTracingServiceName = "etcd"
+		c.ServerConfig.DistributedTracingAddress = addr
+		c.ServerConfig.DistributedTracingSamplingRatePerMillion = 1_000_000
+	}
 }
 
 // NewEtcdProcessCluster launches a new cluster from etcd processes, returning
@@ -507,7 +508,7 @@ func (cfg *EtcdProcessClusterConfig) EtcdAllServerProcessConfigs(tb testing.TB) 
 }
 
 func (cfg *EtcdProcessClusterConfig) SetInitialOrDiscovery(serverCfg *EtcdServerProcessConfig, initialCluster []string, initialClusterState string) {
-	if cfg.Discovery == "" && len(cfg.ServerConfig.DiscoveryCfg.Endpoints) == 0 {
+	if len(cfg.ServerConfig.DiscoveryCfg.Endpoints) == 0 {
 		serverCfg.InitialCluster = strings.Join(initialCluster, ",")
 		serverCfg.Args = append(serverCfg.Args, "--initial-cluster="+serverCfg.InitialCluster)
 		serverCfg.Args = append(serverCfg.Args, "--initial-cluster-state="+initialClusterState)
@@ -573,7 +574,7 @@ func (cfg *EtcdProcessClusterConfig) EtcdServerProcessConfig(tb testing.TB, i in
 		"--listen-peer-urls=" + peerListenURL.String(),
 		"--initial-advertise-peer-urls=" + peerAdvertiseURL.String(),
 		"--initial-cluster-token=" + cfg.ServerConfig.InitialClusterToken,
-		"--data-dir", dataDirPath,
+		"--data-dir=" + dataDirPath,
 		"--snapshot-count=" + fmt.Sprintf("%d", cfg.ServerConfig.SnapshotCount),
 	}
 	var clientHTTPURL string
@@ -593,6 +594,14 @@ func (cfg *EtcdProcessClusterConfig) EtcdServerProcessConfig(tb testing.TB, i in
 	if !cfg.ServerConfig.StrictReconfigCheck {
 		args = append(args, "--strict-reconfig-check=false")
 	}
+	if cfg.ServerConfig.EnableDistributedTracing {
+		args = append(args,
+			"--enable-distributed-tracing",
+			fmt.Sprintf("--distributed-tracing-address=%s", cfg.ServerConfig.DistributedTracingAddress),
+			fmt.Sprintf("--distributed-tracing-service-name=%s", cfg.ServerConfig.DistributedTracingServiceName),
+			fmt.Sprintf("--distributed-tracing-sampling-rate=%d", cfg.ServerConfig.DistributedTracingSamplingRatePerMillion),
+		)
+	}
 
 	var murl string
 	if cfg.MetricsURLScheme != "" {
@@ -605,10 +614,6 @@ func (cfg *EtcdProcessClusterConfig) EtcdServerProcessConfig(tb testing.TB, i in
 
 	args = append(args, cfg.TLSArgs()...)
 
-	if cfg.Discovery != "" {
-		args = append(args, "--discovery="+cfg.Discovery)
-	}
-
 	execPath := cfg.binaryPath(i)
 
 	if cfg.ServerConfig.SnapshotCatchUpEntries != etcdserver.DefaultSnapshotCatchUpEntries {
@@ -617,6 +622,16 @@ func (cfg *EtcdProcessClusterConfig) EtcdServerProcessConfig(tb testing.TB, i in
 		}
 	}
 
+	var (
+		binaryVersion *semver.Version
+		err           error
+	)
+	if execPath != "" {
+		binaryVersion, err = GetVersionFromBinary(execPath)
+		if err != nil {
+			tb.Logf("Failed to get binary version from %s: %v", execPath, err)
+		}
+	}
 	defaultValues := values(*embed.NewConfig())
 	overrideValues := values(cfg.ServerConfig)
 	for flag, value := range overrideValues {
@@ -626,7 +641,7 @@ func (cfg *EtcdProcessClusterConfig) EtcdServerProcessConfig(tb testing.TB, i in
 		if strings.HasSuffix(flag, "snapshot-catchup-entries") && !CouldSetSnapshotCatchupEntries(execPath) {
 			continue
 		}
-		args = append(args, fmt.Sprintf("--%s=%s", flag, value))
+		args = append(args, convertFlag(flag, value, binaryVersion))
 	}
 	envVars := map[string]string{}
 	maps.Copy(envVars, cfg.EnvVars)
@@ -932,6 +947,16 @@ func (epc *EtcdProcessCluster) UpdateProcOptions(i int, tb testing.TB, opts ...E
 	return nil
 }
 
+func PatchArgs(args []string, flag, newValue string) error {
+	for i, arg := range args {
+		if strings.Contains(arg, flag) {
+			args[i] = fmt.Sprintf("--%s=%s", flag, newValue)
+			return nil
+		}
+	}
+	return fmt.Errorf("--%s flag not found", flag)
+}
+
 func (epc *EtcdProcessCluster) Start(ctx context.Context) error {
 	return epc.start(func(ep EtcdProcess) error { return ep.Start(ctx) })
 }
@@ -968,6 +993,38 @@ func (epc *EtcdProcessCluster) rollingStart(f func(ep EtcdProcess) error) error 
 	for range epc.Procs {
 		if err := <-readyC; err != nil {
 			epc.Close()
+			return err
+		}
+	}
+	return nil
+}
+
+func (epc *EtcdProcessCluster) Kill() (err error) {
+	for _, p := range epc.Procs {
+		if p == nil {
+			continue
+		}
+		if curErr := p.Kill(); curErr != nil {
+			if err != nil {
+				err = fmt.Errorf("%w; %w", err, curErr)
+			} else {
+				err = curErr
+			}
+		}
+	}
+	return err
+}
+
+func (epc *EtcdProcessCluster) Wait(ctx context.Context) error {
+	closedC := make(chan error, len(epc.Procs))
+	for i := range epc.Procs {
+		go func(n int) {
+			epc.Procs[n].Wait(ctx)
+			closedC <- epc.Procs[n].Wait(ctx)
+		}(i)
+	}
+	for range epc.Procs {
+		if err := <-closedC; err != nil {
 			return err
 		}
 	}
